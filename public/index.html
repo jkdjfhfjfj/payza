@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Payza Console — Payzaapi test bench</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2218%22 fill=%22%231F7A5C%22/><text x=%2250%22 y=%2266%22 font-size=%2255%22 font-family=%22Georgia,serif%22 fill=%22%23F5F4EF%22 text-anchor=%22middle%22>P</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="lock-screen" class="lock-screen" hidden>
+  <form id="lock-form" class="lock-card">
+    <p class="lock-mark">Payza Console</p>
+    <h1>Enter the console password</h1>
+    <input type="password" id="lock-password" placeholder="Password" autocomplete="current-password" required />
+    <button type="submit" class="btn btn-primary">Unlock</button>
+    <p class="lock-error" id="lock-error" hidden>That password doesn't match. Try again.</p>
+  </form>
+</div>
+
+<div id="app" class="app">
+
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <p class="wordmark">Payza<span>Console</span></p>
+      <p class="tagline">A test bench for every Payzaapi feature</p>
+    </div>
+
+    <div class="mode-pill" id="mode-pill">
+      <span class="dot" id="mode-dot"></span>
+      <span id="mode-label">Checking setup…</span>
+    </div>
+
+    <nav class="nav">
+      <p class="nav-group">Money</p>
+      <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+      <a href="#/pay" data-nav="pay">Pay in</a>
+      <a href="#/verify" data-nav="verify">Verify a payment</a>
+      <a href="#/refunds" data-nav="refunds">Refunds</a>
+      <a href="#/payouts" data-nav="payouts">Payouts</a>
+
+      <p class="nav-group">Customers &amp; billing</p>
+      <a href="#/customers" data-nav="customers">Customers</a>
+      <a href="#/plans" data-nav="plans">Plans &amp; subscriptions</a>
+      <a href="#/invoices" data-nav="invoices">Invoices</a>
+
+      <p class="nav-group">In person</p>
+      <a href="#/pos" data-nav="pos">POS till</a>
+
+      <p class="nav-group">Behind the scenes</p>
+      <a href="#/webhooks" data-nav="webhooks">Webhooks</a>
+      <a href="#/currencies" data-nav="currencies">Currencies</a>
+      <a href="#/settings" data-nav="settings">Settings</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <a href="https://payzaapi.co.ke/docs" target="_blank" rel="noopener">Payzaapi docs ↗</a>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- DASHBOARD -->
+    <section class="view" id="view-dashboard">
+      <header class="view-head">
+        <h1>Dashboard</h1>
+        <p>Everything this console has sent to Payzaapi, and every webhook it has received back.</p>
+      </header>
+
+      <div class="onboarding-banner" id="onboarding-banner" hidden>
+        <h2>Set up your keys to start testing</h2>
+        <p>This console calls the real Payzaapi API on your behalf. Give it your test keys once, and every request below is signed for you.</p>
+        <ol class="steps">
+          <li>Create an account at payzaapi.co.ke and get your <code>pk_test_</code> / <code>sk_test_</code> keys.</li>
+          <li>Paste them into <a href="#/settings">Settings</a>, along with your webhook signing secret.</li>
+          <li>Copy the callback URL shown there into any payment you create — it's this console, ready to log deliveries.</li>
+          <li>Fire a test pay-in from the <a href="#/pay">Pay in</a> tab and watch it arrive below.</li>
+        </ol>
+        <a href="#/settings" class="btn btn-primary">Go to settings</a>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat">
+          <p class="stat-label">Requests logged</p>
+          <p class="stat-value" id="stat-total">—</p>
+        </div>
+        <div class="stat">
+          <p class="stat-label">Succeeded</p>
+          <p class="stat-value stat-good" id="stat-ok">—</p>
+        </div>
+        <div class="stat">
+          <p class="stat-label">Failed</p>
+          <p class="stat-value stat-bad" id="stat-fail">—</p>
+        </div>
+        <div class="stat">
+          <p class="stat-label">Paid in (successful pay-ins)</p>
+          <p class="stat-value" id="stat-paid">—</p>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Pay-ins by currency</h2>
+          </div>
+          <div id="currency-bars" class="bars">
+            <p class="empty">No pay-ins logged yet.</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Recent webhook deliveries</h2>
+            <span class="pulse-dot" id="webhook-pulse" hidden></span>
+          </div>
+          <div id="dash-webhooks" class="log-list">
+            <p class="empty">Nothing received yet. Webhooks you trigger will show up here in real time.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Recent requests</h2>
+          <button class="btn btn-ghost btn-small" data-action="refresh-transactions">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="tx-table">
+            <thead>
+              <tr><th>Time</th><th>Type</th><th>Reference</th><th>Currency</th><th>Amount</th><th>Status</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAY IN -->
+    <section class="view" id="view-pay">
+      <header class="view-head">
+        <h1>Pay in</h1>
+        <p>Start a payment in any of Payzaapi's 14 currencies. KES sends an M-Pesa prompt by default; every other currency returns a hosted checkout link.</p>
+      </header>
+
+      <div class="two-col">
+        <form class="panel form" id="form-pay">
+          <div class="field">
+            <label for="pay-currency">Currency</label>
+            <select id="pay-currency" name="currency" required></select>
+            <p class="hint" id="pay-currency-hint"></p>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="pay-amount">Amount</label>
+              <input type="number" step="0.01" min="0" id="pay-amount" name="amount" required />
+            </div>
+            <div class="field">
+              <label for="pay-reference">Reference</label>
+              <div class="input-with-button">
+                <input type="text" id="pay-reference" name="reference" placeholder="ORDER_1001" />
+                <button type="button" class="btn btn-ghost btn-small" data-action="gen-reference">Generate</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="pay-email">Customer email</label>
+              <input type="email" id="pay-email" name="email" required placeholder="jane@example.com" />
+            </div>
+            <div class="field">
+              <label for="pay-name">Customer name</label>
+              <input type="text" id="pay-name" name="name" placeholder="Jane Wanjiku" />
+            </div>
+          </div>
+
+          <div class="field" id="pay-phone-field">
+            <label for="pay-phone">Customer phone <span class="req-tag" id="phone-req-tag">required for KES</span></label>
+            <input type="text" id="pay-phone" name="phone" placeholder="254712345678" />
+          </div>
+
+          <div class="field checkbox-field" id="stk-field">
+            <label class="switch">
+              <input type="checkbox" id="pay-stk" checked />
+              <span>Send M-Pesa prompt (STK push)</span>
+            </label>
+            <p class="hint">Turn off to open hosted checkout instead, so the customer can pick Airtel Money, Telkom, Equitel or card.</p>
+          </div>
+
+          <div class="field">
+            <label for="pay-callback">Callback URL</label>
+            <input type="url" id="pay-callback" name="callback_url" required />
+            <p class="hint">Defaults to this console's webhook receiver, so deliveries show up in the Webhooks tab.</p>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="pay-redirect">Redirect URL <span class="req-tag optional">optional</span></label>
+              <input type="url" id="pay-redirect" name="redirect_url" placeholder="Where hosted checkout returns the customer" />
+            </div>
+            <div class="field">
+              <label for="pay-cancel">Cancel URL <span class="req-tag optional">optional</span></label>
+              <input type="url" id="pay-cancel" name="cancel_url" placeholder="Where checkout sends them if cancelled" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="pay-description">Description <span class="req-tag optional">optional</span></label>
+            <input type="text" id="pay-description" name="description" placeholder="Shown to the customer and on your statement" />
+          </div>
+
+          <div class="field">
+            <label for="pay-metadata">Metadata <span class="req-tag optional">optional JSON</span></label>
+            <textarea id="pay-metadata" rows="2" placeholder='{"order_id": "1001"}'></textarea>
+          </div>
+
+          <button type="submit" class="btn btn-primary">Create payment</button>
+        </form>
+
+        <div class="panel result-panel">
+          <div class="panel-head"><h2>Result</h2></div>
+          <div id="pay-result" class="result-body">
+            <p class="empty">Submit the form to see Payzaapi's response here.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VERIFY -->
+    <section class="view" id="view-verify">
+      <header class="view-head">
+        <h1>Verify a payment</h1>
+        <p>Check the live status of any reference. In live mode, a pending result is re-checked against the payment network before answering.</p>
+      </header>
+      <div class="two-col">
+        <form class="panel form" id="form-verify">
+          <div class="field">
+            <label for="verify-reference">Reference</label>
+            <input type="text" id="verify-reference" placeholder="ORDER_1001" required />
+          </div>
+          <button type="submit" class="btn btn-primary">Verify</button>
+        </form>
+        <div class="panel result-panel">
+          <div class="panel-head"><h2>Result</h2></div>
+          <div id="verify-result" class="result-body"><p class="empty">Enter a reference to check its status.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REFUNDS -->
+    <section class="view" id="view-refunds">
+      <header class="view-head">
+        <h1>Refunds</h1>
+        <p>Records a full or partial refund against a successful payment and adjusts your wallet. Money isn't sent back to the customer automatically — use a payout for that.</p>
+      </header>
+      <div class="two-col">
+        <form class="panel form" id="form-refund">
+          <div class="field">
+            <label for="refund-reference">Payment reference</label>
+            <input type="text" id="refund-reference" placeholder="ORDER_1001" required />
+          </div>
+          <div class="field">
+            <label for="refund-amount">Amount <span class="req-tag optional">optional — leave blank to refund in full</span></label>
+            <input type="number" step="0.01" min="0" id="refund-amount" />
+          </div>
+          <div class="field">
+            <label for="refund-reason">Reason <span class="req-tag optional">optional</span></label>
+            <input type="text" id="refund-reason" placeholder="Item out of stock" />
+          </div>
+          <button type="submit" class="btn btn-primary">Record refund</button>
+        </form>
+        <div class="panel result-panel">
+          <div class="panel-head"><h2>Result</h2></div>
+          <div id="refund-result" class="result-body"><p class="empty">Submit a refund to see the response.</p></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Refund history</h2>
+          <button class="btn btn-ghost btn-small" data-action="load-refunds">Load</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="refunds-table">
+            <thead><tr><th>Reference</th><th>Original payment</th><th>Amount</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAYOUTS -->
+    <section class="view" id="view-payouts">
+      <header class="view-head">
+        <h1>Payouts</h1>
+        <p>Withdraw from your wallet to mobile money, bank or crypto. Look up valid methods and fees first — they can change.</p>
+      </header>
+
+      <div class="two-col">
+        <form class="panel form" id="form-payout">
+          <div class="field-row">
+            <div class="field">
+              <label for="payout-currency">Currency</label>
+              <select id="payout-currency"></select>
+            </div>
+            <div class="field">
+              <label for="payout-method">Method</label>
+              <select id="payout-method"><option value="">Load methods for this currency first</option></select>
+            </div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-small" id="load-payout-methods" data-action="load-payout-methods">Load methods &amp; fee for this currency</button>
+          <p class="hint" id="payout-fee-hint"></p>
+
+          <div class="field">
+            <label for="payout-amount">Amount (before fees)</label>
+            <input type="number" step="0.01" min="0" id="payout-amount" required />
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="payout-account-number">Account number / phone / wallet address</label>
+              <input type="text" id="payout-account-number" required />
+            </div>
+            <div class="field">
+              <label for="payout-account-name">Account name</label>
+              <input type="text" id="payout-account-name" required />
+            </div>
+          </div>
+
+          <div class="field-row" id="payout-bank-fields" hidden>
+            <div class="field">
+              <label for="payout-bank-country">Bank country</label>
+              <select id="payout-bank-country">
+                <option value="KE">Kenya</option>
+                <option value="NG">Nigeria</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="payout-bank-code">Bank</label>
+              <div class="input-with-button">
+                <select id="payout-bank-code"><option value="">Load banks</option></select>
+                <button type="button" class="btn btn-ghost btn-small" data-action="load-banks">Load</button>
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary">Send payout</button>
+        </form>
+        <div class="panel result-panel">
+          <div class="panel-head"><h2>Result</h2></div>
+          <div id="payout-result" class="result-body"><p class="empty">Submit a payout to see the response.</p></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Payout history</h2>
+          <button class="btn btn-ghost btn-small" data-action="load-payouts">Load</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="payouts-table">
+            <thead><tr><th>Reference</th><th>Amount</th><th>Currency</th><th>Method</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- CUSTOMERS -->
+    <section class="view" id="view-customers">
+      <header class="view-head">
+        <h1>Customers</h1>
+        <p>Create a customer, or send the same email again to update the existing record.</p>
+      </header>
+      <div class="two-col">
+        <form class="panel form" id="form-customer">
+          <div class="field">
+            <label for="cust-name">Name</label>
+            <input type="text" id="cust-name" required />
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="cust-email">Email <span class="req-tag optional">optional, used to match</span></label>
+              <input type="email" id="cust-email" />
+            </div>
+            <div class="field">
+              <label for="cust-phone">Phone <span class="req-tag optional">optional</span></label>
+              <input type="text" id="cust-phone" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="cust-address">Address <span class="req-tag optional">optional</span></label>
+            <input type="text" id="cust-address" />
+          </div>
+          <div class="field">
+            <label for="cust-notes">Notes <span class="req-tag optional">optional</span></label>
+            <input type="text" id="cust-notes" />
+          </div>
+          <button type="submit" class="btn btn-primary">Save customer</button>
+        </form>
+        <div class="panel result-panel">
+          <div class="panel-head"><h2>Result</h2></div>
+          <div id="customer-result" class="result-body"><p class="empty">Save a customer to see the response.</p></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>All customers</h2>
+          <div class="panel-actions">
+            <input type="search" id="customer-search" placeholder="Search name, email or phone" />
+            <button class="btn btn-ghost btn-small" data-action="load-customers">Search</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="customers-table">
+            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Orders</th><th>Spent</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- PLANS & SUBSCRIPTIONS -->
+    <section class="view" id="view-plans">
+      <header class="view-head">
+        <h1>Plans &amp; subscriptions</h1>
+        <p>A plan is what you charge and how often. Subscribe a customer to bill them on that schedule.</p>
+      </header>
+
+      <div class="two-col">
+        <form class="panel form" id="form-plan">
+          <h3 class="form-subtitle">New plan</h3>
+          <div class="field">
+            <label for="plan-name">Name</label>
+            <input type="text" id="plan-name" placeholder="Gym membership" required />
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="plan-amount">Amount</label>
+              <input type="number" step="0.01" min="0" id="plan-amount" required />
+            </div>
+            <div class="field">
+              <label for="plan-currency">Currency</label>
+              <select id="plan-currency"></select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="plan-interval">Interval</label>
+            <select id="plan-interval">
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly" selected>Monthly</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">Create plan</button>
+        </form>
+
+        <form class="panel form" id="form-subscription">
+          <h3 class="form-subtitle">New subscription</h3>
+          <div class="field">
+            <label for="sub-plan-id">Plan ID</label>
+            <input type="number" id="sub-plan-id" required />
+            <p class="hint">Find this in the plans table below after creating one.</p>
+          </div>
+          <div class="field">
+            <label for="sub-name">Customer name</label>
+            <input type="text" id="sub-name" required />
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="sub-phone">Customer phone <span class="req-tag">required for KES</span></label>
+              <input type="text" id="sub-phone" placeholder="254712345678" />
+            </div>
+            <div class="field">
+              <label for="sub-email">Customer email <span class="req-tag">required for USD</span></label>
+              <input type="email" id="sub-email" />
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Create subscription</button>
+        </form>
+      </div>
+
+      <div class="result-strip">
+        <div class="panel result-panel"><div class="panel-head"><h2>Plan result</h2></div><div id="plan-result" class="result-body"><p class="empty">—</p></div></div>
+        <div class="panel result-panel"><div class="panel-head"><h2>Subscription result</h2></div><div id="subscription-result" class="result-body"><p class="empty">—</p></div></div>
+      </div>
+
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head"><h2>Plans</h2><button class="btn btn-ghost btn-small" data-action="load-plans">Load</button></div>
+          <div class="table-wrap">
+            <table class="table" id="plans-table"><thead><tr><th>ID</th><th>Name</th><th>Amount</th><th>Interval</th><th>Status</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Subscriptions</h2><button class="btn btn-ghost btn-small" data-action="load-subscriptions">Load</button></div>
+          <div class="table-wrap">
+            <table class="table" id="subscriptions-table"><thead><tr><th>ID</th><th>Plan</th><th>Customer</th><th>Status</th><th>Next charge</th><th></th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INVOICES -->
+    <section class="view" id="view-invoices">
+      <header class="view-head">
+        <h1>Invoices</h1>
+        <p>Bill a client with a shareable page they can view and pay. Save as a draft or send it immediately.</p>
+      </header>
+
+      <div class="two-col">
+        <form class="panel form" id="form-invoice">
+          <div class="field-row">
+            <div class="field">
+              <label for="inv-client-name">Client name</label>
+              <input type="text" id="inv-client-name" required />
+            </div>
+            <div class="field">
+              <label for="inv-client-email">Client email</label>
+              <input type="email" id="inv-client-email" required />
+            </div>
+          </div>
+
+          <div class="field" id="invoice-items">
+            <label>Line items</label>
+            <div class="line-items" id="line-items-list"></div>
+            <button type="button" class="btn btn-ghost btn-small" data-action="add-line-item">Add line item</button>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="inv-currency">Currency</label>
+              <select id="inv-currency"></select>
+            </div>
+            <div class="field">
+              <label for="inv-tax">Tax rate % <span class="req-tag optional">optional</span></label>
+              <input type="number" step="0.01" min="0" id="inv-tax" />
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="inv-discount">Discount amount <span class="req-tag optional">optional</span></label>
+              <input type="number" step="0.01" min="0" id="inv-discount" />
+            </div>
+            <div class="field">
+              <label for="inv-due">Due date <span class="req-tag optional">optional</span></label>
+              <input type="date" id="inv-due" />
+            </div>
+          </div>
+          <div class="field checkbox-field">
+            <label class="switch"><input type="checkbox" id="inv-send" /><span>Email this invoice now</span></label>
+          </div>
+          <button type="submit" class="btn btn-primary">Create invoice</button>
+        </form>
+        <div class="panel result-panel">
+          <div class="panel-head"><h2>Result</h2></div>
+          <div id="invoice-result" class="result-body"><p class="empty">Create an invoice to see the response.</p></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Invoices</h2><button class="btn btn-ghost btn-small" data-action="load-invoices">Load</button></div>
+        <div class="table-wrap">
+          <table class="table" id="invoices-table">
+            <thead><tr><th>Number</th><th>Client</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- POS -->
+    <section class="view" id="view-pos">
+      <header class="view-head">
+        <h1>POS till</h1>
+        <p>Open a session, ring up a sale, then close the till to reconcile cash — like running a real shift.</p>
+      </header>
+
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head"><h2>Session</h2></div>
+          <form id="form-pos-open" class="form">
+            <div class="field">
+              <label for="pos-opening-cash">Opening cash</label>
+              <input type="number" step="0.01" min="0" id="pos-opening-cash" value="0" />
+            </div>
+            <button type="submit" class="btn btn-primary btn-small">Open session</button>
+          </form>
+          <div class="divider"></div>
+          <div class="field">
+            <label>Active session reference</label>
+            <input type="text" id="pos-session-reference" placeholder="Opens automatically, or paste one" />
+          </div>
+          <form id="form-pos-close" class="form">
+            <div class="field">
+              <label for="pos-closing-cash">Closing cash</label>
+              <input type="number" step="0.01" min="0" id="pos-closing-cash" />
+            </div>
+            <button type="submit" class="btn btn-ghost btn-small">Close session</button>
+          </form>
+          <div id="pos-session-result" class="result-body"><p class="empty">Open a session to begin.</p></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>Ring up a sale</h2></div>
+          <form id="form-pos-sale" class="form">
+            <div class="line-items" id="pos-items-list"></div>
+            <button type="button" class="btn btn-ghost btn-small" data-action="add-pos-item">Add item</button>
+            <div class="field-row">
+              <div class="field">
+                <label for="pos-payment-method">Payment method</label>
+                <select id="pos-payment-method">
+                  <option value="cash">Cash</option>
+                  <option value="mobile_money">Mobile money</option>
+                  <option value="card">Card</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="pos-cash-received">Cash received <span class="req-tag optional">optional</span></label>
+                <input type="number" step="0.01" min="0" id="pos-cash-received" />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Record sale</button>
+          </form>
+          <div id="pos-sale-result" class="result-body"><p class="empty">Record a sale to see the receipt.</p></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Sales in this session</h2><button class="btn btn-ghost btn-small" data-action="load-pos-sales">Load</button></div>
+        <div class="table-wrap">
+          <table class="table" id="pos-sales-table">
+            <thead><tr><th>Reference</th><th>Total</th><th>Method</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- WEBHOOKS -->
+    <section class="view" id="view-webhooks">
+      <header class="view-head">
+        <h1>Webhooks</h1>
+        <p>Deliveries this console has received on <code id="webhook-url-inline"></code>, alongside Payzaapi's own delivery log for your account.</p>
+      </header>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Received here (live)</h2>
+          <button class="btn btn-ghost btn-small" data-action="load-webhook-events">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="webhook-events-table">
+            <thead><tr><th>Time</th><th>Event</th><th>Reference</th><th>Signature</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Payzaapi's delivery log</h2>
+          <div class="panel-actions">
+            <select id="webhook-log-status">
+              <option value="">All statuses</option>
+              <option value="success">Success</option>
+              <option value="failed">Failed</option>
+            </select>
+            <button class="btn btn-ghost btn-small" data-action="load-webhook-log">Load</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="webhook-log-table">
+            <thead><tr><th>ID</th><th>Reference</th><th>Event</th><th>HTTP</th><th>Status</th><th>Attempts</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- CURRENCIES -->
+    <section class="view" id="view-currencies">
+      <header class="view-head">
+        <h1>Currencies</h1>
+        <p>What's payable right now, straight from the docs. Send the code in the <code>currency</code> field.</p>
+      </header>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="table" id="currencies-table">
+            <thead><tr><th>Currency</th><th>Code</th><th>How customers pay</th><th>Minimum</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <header class="view-head">
+        <h1>Settings</h1>
+        <p>Your keys are stored in this console's own database and sent to Payzaapi from the server — never from your browser.</p>
+      </header>
+
+      <div class="two-col">
+        <form class="panel form" id="form-settings">
+          <div class="field">
+            <label for="set-public-key">Public key</label>
+            <input type="text" id="set-public-key" placeholder="pk_test_… or pk_live_…" />
+          </div>
+          <div class="field">
+            <label for="set-secret-key">Secret key</label>
+            <input type="password" id="set-secret-key" placeholder="sk_test_… or sk_live_…" autocomplete="off" />
+            <p class="hint" id="secret-key-status"></p>
+          </div>
+          <div class="field">
+            <label for="set-webhook-secret">Webhook signing secret</label>
+            <input type="password" id="set-webhook-secret" placeholder="From Dashboard → API keys" autocomplete="off" />
+            <p class="hint" id="webhook-secret-status"></p>
+          </div>
+          <div class="field">
+            <label for="set-base-url">API base URL</label>
+            <input type="text" id="set-base-url" value="https://payzaapi.co.ke/api/v1" />
+          </div>
+          <button type="submit" class="btn btn-primary">Save settings</button>
+        </form>
+
+        <div class="panel">
+          <div class="panel-head"><h2>Your callback URL</h2></div>
+          <p>Paste this into <code>callback_url</code> on any payment you create from this console, so webhooks land in the log.</p>
+          <div class="input-with-button">
+            <input type="text" id="callback-url-display" readonly />
+            <button type="button" class="btn btn-ghost btn-small" data-action="copy-callback">Copy</button>
+          </div>
+          <div class="divider"></div>
+          <div class="panel-head"><h2>Go-live checklist</h2></div>
+          <ul class="checklist">
+            <li>Verify <code>X-Payza-Signature</code> on every webhook (this console does it for you).</li>
+            <li>Reply 200 within 10 seconds and ignore events you've already processed.</li>
+            <li>Fulfil orders from the webhook or verify, never the redirect alone.</li>
+            <li>Check amount and currency against the order before fulfilling.</li>
+            <li>Use a unique <code>reference</code> for every payment.</li>
+            <li>Swap in <code>pk_live_</code> / <code>sk_live_</code> keys when you're ready.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

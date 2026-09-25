@@ -1,0 +1,21 @@
+{
+  "name": "payza-console",
+  "version": "1.0.0",
+  "description": "A test console for every Payzaapi feature — pay-ins across 14 currencies, payouts, refunds, subscriptions, invoices, POS and live webhooks.",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "pg": "^8.13.1"
+  }
+}

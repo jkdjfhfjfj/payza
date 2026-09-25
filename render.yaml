@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: payza-console
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CONSOLE_PASSWORD
+        sync: false
+      - key: NODE_VERSION
+        value: 20.11.1

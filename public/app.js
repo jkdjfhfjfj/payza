@@ -1,0 +1,797 @@
+(() => {
+  'use strict';
+
+  // ---------- State ----------
+  const state = {
+    currencies: [],
+    settings: null,
+    posSession: null,
+  };
+  const CALLBACK_URL = `${location.origin}/webhooks/payza`;
+
+  // ---------- Small utilities ----------
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  function toast(message, kind = '') {
+    const el = $('#toast');
+    el.textContent = message;
+    el.className = `toast ${kind}`;
+    el.hidden = false;
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { el.hidden = true; }, 4200);
+  }
+
+  function fmtAmount(amount, currency) {
+    if (amount === null || amount === undefined || amount === '') return '—';
+    const n = Number(amount);
+    if (Number.isNaN(n)) return String(amount);
+    return `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency ? ' ' + currency : ''}`;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function syntaxHighlight(json) {
+    const str = typeof json === 'string' ? json : JSON.stringify(json, null, 2);
+    const escaped = escapeHtml(str);
+    return escaped.replace(
+      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
+      (match) => {
+        let cls = 'n';
+        if (/^"/.test(match)) cls = /:$/.test(match) ? 'k' : 's';
+        else if (/true|false/.test(match)) cls = 'b';
+        else if (/null/.test(match)) cls = 'b';
+        return `<span class="${cls}">${match}</span>`;
+      }
+    );
+  }
+
+  function renderJson(container, data) {
+    const pre = document.createElement('pre');
+    pre.className = 'json';
+    pre.innerHTML = syntaxHighlight(data);
+    container.appendChild(pre);
+  }
+
+  function badge(text, kind) {
+    return `<span class="badge badge-${kind}">${escapeHtml(text)}</span>`;
+  }
+
+  function statusBadgeKind(status) {
+    if (['success', 'completed', 'active', 'paid', 'sent'].includes(status)) return 'ok';
+    if (['failed', 'cancelled', 'rejected', 'past_due', 'overdue'].includes(status)) return 'fail';
+    return 'pending';
+  }
+
+  // ---------- API ----------
+  async function api(path, { method = 'GET', body } = {}) {
+    const headers = { 'Content-Type': 'application/json' };
+    const pw = sessionStorage.getItem('payza_console_password');
+    if (pw) headers['X-Console-Password'] = pw;
+
+    const res = await fetch(`/api${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+    if (res.status === 401) {
+      const data = await res.json().catch(() => ({}));
+      if (data.message === 'Console is locked.') {
+        showLock();
+        throw new Error('Console is locked.');
+      }
+    }
+
+    const data = await res.json().catch(() => ({ success: false, message: 'The server sent back something unexpected.' }));
+    return { ok: res.ok, status: res.status, data };
+  }
+
+  // ---------- Lock screen ----------
+  function showLock() {
+    $('#lock-screen').hidden = false;
+    $('#app').style.display = 'none';
+  }
+  function hideLock() {
+    $('#lock-screen').hidden = true;
+    $('#app').style.display = '';
+  }
+
+  async function checkLock() {
+    const res = await fetch('/api/health');
+    const data = await res.json().catch(() => ({}));
+    if (!data.locked) { hideLock(); return true; }
+
+    const pw = sessionStorage.getItem('payza_console_password');
+    if (!pw) { showLock(); return false; }
+
+    const check = await fetch('/api/settings', { headers: { 'X-Console-Password': pw } });
+    if (check.status === 401) {
+      sessionStorage.removeItem('payza_console_password');
+      showLock();
+      return false;
+    }
+    hideLock();
+    return true;
+  }
+
+  $('#lock-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const password = $('#lock-password').value;
+    const res = await fetch('/api/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      sessionStorage.setItem('payza_console_password', password);
+      hideLock();
+      init();
+    } else {
+      $('#lock-error').hidden = false;
+    }
+  });
+
+  // ---------- Routing ----------
+  const ROUTES = ['dashboard', 'pay', 'verify', 'refunds', 'payouts', 'customers', 'plans', 'invoices', 'pos', 'webhooks', 'currencies', 'settings'];
+
+  function currentRoute() {
+    const hash = location.hash.replace('#/', '');
+    return ROUTES.includes(hash) ? hash : 'dashboard';
+  }
+
+  function renderRoute() {
+    const route = currentRoute();
+    $$('.view').forEach((v) => v.classList.remove('active'));
+    $(`#view-${route}`).classList.add('active');
+    $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === route));
+    onRouteEnter(route);
+  }
+
+  function onRouteEnter(route) {
+    if (route === 'dashboard') loadDashboard();
+    if (route === 'webhooks') { loadWebhookEvents(); }
+    if (route === 'currencies') renderCurrenciesTable();
+  }
+
+  window.addEventListener('hashchange', renderRoute);
+
+  // ---------- Currencies ----------
+  async function loadCurrencies() {
+    const { data } = await api('/currencies');
+    state.currencies = data.currencies || [];
+    populateCurrencySelects();
+    renderCurrenciesTable();
+  }
+
+  function populateCurrencySelects() {
+    const live = state.currencies.filter((c) => c.live);
+    const selects = ['#pay-currency', '#payout-currency', '#plan-currency', '#inv-currency'];
+    selects.forEach((sel) => {
+      const el = $(sel);
+      if (!el) return;
+      el.innerHTML = live.map((c) => `<option value="${c.code}">${c.code} — ${c.name}</option>`).join('');
+    });
+    $('#pay-currency').value = 'KES';
+    updatePayCurrencyUI();
+  }
+
+  function renderCurrenciesTable() {
+    const tbody = $('#currencies-table tbody');
+    tbody.innerHTML = state.currencies.map((c) => `
+      <tr>
+        <td style="font-family: var(--font-ui); font-weight: 500;">${escapeHtml(c.name)}</td>
+        <td>${c.code}${c.displayAs ? ` <span class="tag-currency">shown as ${c.displayAs}</span>` : ''}</td>
+        <td style="font-family: var(--font-ui);">${escapeHtml(c.methods)}</td>
+        <td>${c.minimum !== null ? fmtAmount(c.minimum, c.code) : 'Set by network'}</td>
+        <td>${c.live ? badge('live', 'ok') : badge('coming soon', 'pending')}</td>
+      </tr>
+    `).join('');
+  }
+
+  // ---------- Settings ----------
+  async function loadSettings() {
+    const { data } = await api('/settings');
+    state.settings = data.settings;
+    $('#set-public-key').value = data.settings.public_key || '';
+    $('#secret-key-status').textContent = data.settings.secret_key_set
+      ? 'A secret key is saved. Leave blank to keep it.'
+      : 'No secret key saved yet.';
+    $('#webhook-secret-status').textContent = data.settings.webhook_secret_set
+      ? 'A webhook signing secret is saved. Leave blank to keep it.'
+      : 'No webhook signing secret saved yet — signatures will show as unverified.';
+    $('#set-base-url').value = data.settings.base_url;
+    $('#callback-url-display').value = CALLBACK_URL;
+    $('#webhook-url-inline').textContent = CALLBACK_URL;
+    updateModePill();
+    updateOnboardingBanner();
+  }
+
+  function updateModePill() {
+    const pill = $('#mode-pill');
+    const dot = $('#mode-dot');
+    const label = $('#mode-label');
+    const s = state.settings;
+    if (!s || !s.public_key) {
+      pill.className = 'mode-pill warn';
+      label.textContent = 'Not configured';
+    } else if (s.mode === 'live') {
+      pill.className = 'mode-pill live';
+      label.textContent = 'Live mode';
+    } else {
+      pill.className = 'mode-pill ok';
+      label.textContent = 'Test mode';
+    }
+  }
+
+  function updateOnboardingBanner() {
+    const configured = state.settings && state.settings.public_key && state.settings.secret_key_set;
+    $('#onboarding-banner').hidden = Boolean(configured);
+  }
+
+  $('#form-settings').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      public_key: $('#set-public-key').value.trim() || null,
+      secret_key: $('#set-secret-key').value.trim() || null,
+      webhook_secret: $('#set-webhook-secret').value.trim() || null,
+      base_url: $('#set-base-url').value.trim() || null,
+    };
+    const { data } = await api('/settings', { method: 'POST', body });
+    if (data.success) {
+      toast('Settings saved.', 'success');
+      $('#set-secret-key').value = '';
+      $('#set-webhook-secret').value = '';
+      await loadSettings();
+    } else {
+      toast(data.message || 'Could not save settings.', 'error');
+    }
+  });
+
+  $('[data-action="copy-callback"]').addEventListener('click', () => {
+    navigator.clipboard.writeText(CALLBACK_URL).then(() => toast('Callback URL copied.', 'success'));
+  });
+
+  // ---------- Result renderers ----------
+  function clearResult(container) { container.innerHTML = ''; }
+
+  function renderGenericResult(container, ok, data, extraHtml = '') {
+    clearResult(container);
+    const summary = document.createElement('div');
+    summary.className = 'result-summary';
+    summary.innerHTML = badge(ok ? 'success' : 'failed', ok ? 'ok' : 'fail') +
+      (data.message ? `<span>${escapeHtml(data.message)}</span>` : '');
+    container.appendChild(summary);
+    if (extraHtml) {
+      const div = document.createElement('div');
+      div.className = 'result-links';
+      div.innerHTML = extraHtml;
+      container.appendChild(div);
+    }
+    renderJson(container, data);
+  }
+
+  // ---------- Pay in ----------
+  function updatePayCurrencyUI() {
+    const code = $('#pay-currency').value;
+    const meta = state.currencies.find((c) => c.code === code);
+    $('#pay-currency-hint').textContent = meta
+      ? `${meta.methods}${meta.minimum !== null ? ` — minimum ${fmtAmount(meta.minimum, code)}` : ''}`
+      : '';
+    const isKES = code === 'KES';
+    $('#stk-field').hidden = !isKES;
+    $('#phone-req-tag').textContent = isKES ? 'required for KES' : 'optional';
+    $('#pay-phone').required = isKES;
+  }
+  $('#pay-currency').addEventListener('change', updatePayCurrencyUI);
+
+  $('[data-action="gen-reference"]').addEventListener('click', () => {
+    $('#pay-reference').value = `TEST_${Date.now().toString(36).toUpperCase()}`;
+  });
+
+  $('#form-pay').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const currency = $('#pay-currency').value;
+    let metadata;
+    const metaRaw = $('#pay-metadata').value.trim();
+    if (metaRaw) {
+      try { metadata = JSON.parse(metaRaw); }
+      catch { toast('Metadata must be valid JSON.', 'error'); return; }
+    }
+    const body = {
+      amount: Number($('#pay-amount').value),
+      currency,
+      reference: $('#pay-reference').value.trim() || undefined,
+      customer: {
+        email: $('#pay-email').value.trim(),
+        name: $('#pay-name').value.trim() || undefined,
+        phone: $('#pay-phone').value.trim() || undefined,
+      },
+      callback_url: $('#pay-callback').value.trim(),
+      redirect_url: $('#pay-redirect').value.trim() || undefined,
+      cancel_url: $('#pay-cancel').value.trim() || undefined,
+      description: $('#pay-description').value.trim() || undefined,
+      metadata,
+    };
+    if (currency === 'KES') body.stk_push = $('#pay-stk').checked;
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const { data } = await api('/pay', { method: 'POST', body }).finally(() => { btn.disabled = false; btn.textContent = 'Create payment'; });
+
+    let links = '';
+    if (data.data?.payment_url) links += `<a href="${data.data.payment_url}" target="_blank" rel="noopener">Open payment_url ↗</a>`;
+    if (data.data?.crypto_payment_url) links += `<a href="${data.data.crypto_payment_url}" target="_blank" rel="noopener">Open crypto_payment_url ↗</a>`;
+
+    renderGenericResult($('#pay-result'), data.success, data, links);
+    if (data.success) toast(`Payment ${data.data?.reference || ''} created.`, 'success');
+  });
+
+  // Pre-fill callback URL (script runs after the DOM is already parsed)
+  $('#pay-callback').value = CALLBACK_URL;
+
+  // ---------- Verify ----------
+  $('#form-verify').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const reference = $('#verify-reference').value.trim();
+    const { data } = await api(`/verify/${encodeURIComponent(reference)}`);
+    renderGenericResult($('#verify-result'), data.success, data);
+  });
+
+  // ---------- Refunds ----------
+  $('#form-refund').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      reference: $('#refund-reference').value.trim(),
+      amount: $('#refund-amount').value ? Number($('#refund-amount').value) : undefined,
+      reason: $('#refund-reason').value.trim() || undefined,
+    };
+    const { data } = await api('/refund', { method: 'POST', body });
+    renderGenericResult($('#refund-result'), data.success, data);
+    if (data.success) toast('Refund recorded.', 'success');
+  });
+
+  $('[data-action="load-refunds"]').addEventListener('click', async () => {
+    const { data } = await api('/refunds');
+    const tbody = $('#refunds-table tbody');
+    const list = data.refunds || data.data || [];
+    tbody.innerHTML = list.length ? list.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.reference || '—')}</td>
+        <td>${escapeHtml(r.original_reference || '—')}</td>
+        <td>${fmtAmount(r.amount, r.currency)}</td>
+        <td>${badge(r.status || '—', statusBadgeKind(r.status))}</td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="4">No refunds yet.</td></tr>`;
+  });
+
+  // ---------- Payouts ----------
+  $('[data-action="load-payout-methods"]').addEventListener('click', async () => {
+    const currency = $('#payout-currency').value;
+    const { data } = await api(`/payout-methods?currency=${currency}`);
+    const pm = data.payout_methods;
+    if (!pm || !data.success) {
+      $('#payout-fee-hint').textContent = data.message || 'Could not load methods for this currency.';
+      return;
+    }
+    const methodSel = $('#payout-method');
+    methodSel.innerHTML = pm.methods.map((m) => `<option value="${m.value}" data-bank="${m.requires_bank_fields}">${m.label}</option>`).join('');
+    const feeText = pm.fee?.type === 'flat' ? `flat fee ${fmtAmount(pm.fee.amount, currency)}` : `${pm.fee?.amount}% (with a floor)`;
+    $('#payout-fee-hint').textContent = `Minimum withdrawal ${fmtAmount(pm.minimum_withdrawal, currency)} — fee: ${feeText}.`;
+    toggleBankFields();
+  });
+  $('#payout-method').addEventListener('change', toggleBankFields);
+  function toggleBankFields() {
+    const opt = $('#payout-method').selectedOptions[0];
+    $('#payout-bank-fields').hidden = !(opt && opt.dataset.bank === 'true');
+  }
+
+  $('[data-action="load-banks"]').addEventListener('click', async () => {
+    const country = $('#payout-bank-country').value;
+    const { data } = await api(`/banks?country=${country}`);
+    const sel = $('#payout-bank-code');
+    sel.innerHTML = (data.banks || []).map((b) => `<option value="${b.code}">${escapeHtml(b.name)} (${b.code})</option>`).join('') || '<option value="">No banks returned</option>';
+  });
+
+  $('#form-payout').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      amount: Number($('#payout-amount').value),
+      currency: $('#payout-currency').value,
+      method: $('#payout-method').value,
+      account_number: $('#payout-account-number').value.trim(),
+      account_name: $('#payout-account-name').value.trim(),
+    };
+    if (!$('#payout-bank-fields').hidden) {
+      body.bank_code = $('#payout-bank-code').value;
+      body.bank_name = $('#payout-bank-code').selectedOptions[0]?.textContent;
+    }
+    const { data } = await api('/payout', { method: 'POST', body });
+    renderGenericResult($('#payout-result'), data.success, data);
+    if (data.success) toast('Payout submitted.', 'success');
+  });
+
+  $('[data-action="load-payouts"]').addEventListener('click', async () => {
+    const { data } = await api('/payouts');
+    const tbody = $('#payouts-table tbody');
+    const list = data.payouts || data.data || [];
+    tbody.innerHTML = list.length ? list.map((p) => `
+      <tr>
+        <td>${escapeHtml(p.reference || '—')}</td>
+        <td>${fmtAmount(p.amount, p.currency)}</td>
+        <td>${p.currency || '—'}</td>
+        <td>${p.method || '—'}</td>
+        <td>${badge(p.status || '—', statusBadgeKind(p.status))}</td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="5">No payouts yet.</td></tr>`;
+  });
+
+  // ---------- Customers ----------
+  $('#form-customer').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      name: $('#cust-name').value.trim(),
+      email: $('#cust-email').value.trim() || undefined,
+      phone: $('#cust-phone').value.trim() || undefined,
+      address: $('#cust-address').value.trim() || undefined,
+      notes: $('#cust-notes').value.trim() || undefined,
+    };
+    const { data } = await api('/customers', { method: 'POST', body });
+    renderGenericResult($('#customer-result'), data.success, data);
+    if (data.success) toast(data.created ? 'Customer created.' : 'Customer updated.', 'success');
+  });
+
+  $('[data-action="load-customers"]').addEventListener('click', async () => {
+    const q = $('#customer-search').value.trim();
+    const { data } = await api(`/customers${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+    const tbody = $('#customers-table tbody');
+    const list = data.customers || data.data || [];
+    tbody.innerHTML = list.length ? list.map((c) => `
+      <tr>
+        <td style="font-family: var(--font-ui);">${escapeHtml(c.name || '—')}</td>
+        <td>${escapeHtml(c.email || '—')}</td>
+        <td>${escapeHtml(c.phone || '—')}</td>
+        <td>${c.total_orders ?? '—'}</td>
+        <td>${fmtAmount(c.total_spent)}</td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="5">No customers yet.</td></tr>`;
+  });
+
+  // ---------- Plans & subscriptions ----------
+  $('#form-plan').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      name: $('#plan-name').value.trim(),
+      amount: Number($('#plan-amount').value),
+      currency: $('#plan-currency').value,
+      interval: $('#plan-interval').value,
+    };
+    const { data } = await api('/plans', { method: 'POST', body });
+    renderGenericResult($('#plan-result'), data.success, data);
+    if (data.success) toast('Plan created.', 'success');
+  });
+
+  $('[data-action="load-plans"]').addEventListener('click', async () => {
+    const { data } = await api('/plans');
+    const tbody = $('#plans-table tbody');
+    const list = data.plans || data.data || [];
+    tbody.innerHTML = list.length ? list.map((p) => `
+      <tr><td>${p.id}</td><td style="font-family: var(--font-ui);">${escapeHtml(p.name)}</td><td>${fmtAmount(p.amount, p.currency)}</td><td>${p.interval}</td><td>${badge(p.status || 'active', statusBadgeKind(p.status))}</td></tr>
+    `).join('') : `<tr class="empty-row"><td colspan="5">No plans yet.</td></tr>`;
+  });
+
+  $('#form-subscription').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      plan_id: Number($('#sub-plan-id').value),
+      customer_name: $('#sub-name').value.trim(),
+      customer_phone: $('#sub-phone').value.trim() || undefined,
+      customer_email: $('#sub-email').value.trim() || undefined,
+    };
+    const { data } = await api('/subscriptions', { method: 'POST', body });
+    renderGenericResult($('#subscription-result'), data.success, data);
+    if (data.success) toast('Subscription created.', 'success');
+  });
+
+  async function loadSubscriptions() {
+    const { data } = await api('/subscriptions');
+    const tbody = $('#subscriptions-table tbody');
+    const list = data.subscriptions || data.data || [];
+    tbody.innerHTML = list.length ? list.map((s) => `
+      <tr>
+        <td>${s.id}</td><td>${s.plan_id}</td><td style="font-family: var(--font-ui);">${escapeHtml(s.customer_name || '—')}</td>
+        <td>${badge(s.status || '—', statusBadgeKind(s.status))}</td>
+        <td>${fmtTime(s.next_charge_at)}</td>
+        <td><button class="btn btn-ghost btn-small" data-cancel-sub="${s.id}">Cancel</button></td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="6">No subscriptions yet.</td></tr>`;
+  }
+  $('[data-action="load-subscriptions"]').addEventListener('click', loadSubscriptions);
+
+  $('#subscriptions-table').addEventListener('click', async (e) => {
+    const id = e.target.dataset.cancelSub;
+    if (!id) return;
+    const { data } = await api('/subscription-cancel', { method: 'POST', body: { id: Number(id), action: 'cancel' } });
+    toast(data.success ? 'Subscription cancelled.' : (data.message || 'Could not cancel.'), data.success ? 'success' : 'error');
+    loadSubscriptions();
+  });
+
+  // ---------- Invoices ----------
+  let lineItemCount = 0;
+  function addLineItem() {
+    lineItemCount += 1;
+    const id = lineItemCount;
+    const row = document.createElement('div');
+    row.className = 'line-item-row';
+    row.dataset.id = id;
+    row.innerHTML = `
+      <input type="text" placeholder="Description" data-role="desc" required />
+      <input type="number" placeholder="Qty" min="1" value="1" data-role="qty" required />
+      <input type="number" placeholder="Unit price" min="0" step="0.01" data-role="price" required />
+      <button type="button" class="remove-line" title="Remove">×</button>
+    `;
+    row.querySelector('.remove-line').addEventListener('click', () => row.remove());
+    $('#line-items-list').appendChild(row);
+  }
+  $('[data-action="add-line-item"]').addEventListener('click', addLineItem);
+
+  $('#form-invoice').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const items = $$('#line-items-list .line-item-row').map((row) => ({
+      description: row.querySelector('[data-role="desc"]').value.trim(),
+      qty: Number(row.querySelector('[data-role="qty"]').value),
+      unit_price: Number(row.querySelector('[data-role="price"]').value),
+    }));
+    if (!items.length) { toast('Add at least one line item.', 'error'); return; }
+    const body = {
+      client_name: $('#inv-client-name').value.trim(),
+      client_email: $('#inv-client-email').value.trim(),
+      items,
+      currency: $('#inv-currency').value,
+      tax_rate: $('#inv-tax').value ? Number($('#inv-tax').value) : undefined,
+      discount_amount: $('#inv-discount').value ? Number($('#inv-discount').value) : undefined,
+      due_date: $('#inv-due').value || undefined,
+      send: $('#inv-send').checked,
+    };
+    const { data } = await api('/invoices', { method: 'POST', body });
+    let links = '';
+    if (data.invoice?.public_url) links += `<a href="${data.invoice.public_url}" target="_blank" rel="noopener">Open invoice page ↗</a>`;
+    renderGenericResult($('#invoice-result'), data.success, data, links);
+    if (data.success) toast(`Invoice ${data.invoice?.invoice_number || ''} created.`, 'success');
+  });
+
+  async function loadInvoices() {
+    const { data } = await api('/invoices');
+    const tbody = $('#invoices-table tbody');
+    const list = data.invoices || data.data || [];
+    tbody.innerHTML = list.length ? list.map((inv) => `
+      <tr>
+        <td>${escapeHtml(inv.invoice_number || '—')}</td>
+        <td style="font-family: var(--font-ui);">${escapeHtml(inv.client_name || '—')}</td>
+        <td>${fmtAmount(inv.total, inv.currency)}</td>
+        <td>${badge(inv.status || '—', statusBadgeKind(inv.status))}</td>
+        <td>
+          <button class="btn btn-ghost btn-small" data-inv-action="send" data-inv="${inv.invoice_number}">Send</button>
+          <button class="btn btn-ghost btn-small" data-inv-action="mark_paid" data-inv="${inv.invoice_number}">Mark paid</button>
+          <button class="btn btn-ghost btn-small" data-inv-action="cancel" data-inv="${inv.invoice_number}">Cancel</button>
+        </td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="5">No invoices yet.</td></tr>`;
+  }
+  $('[data-action="load-invoices"]').addEventListener('click', loadInvoices);
+
+  $('#invoices-table').addEventListener('click', async (e) => {
+    const action = e.target.dataset.invAction;
+    const invoice_number = e.target.dataset.inv;
+    if (!action) return;
+    const { data } = await api('/invoice', { method: 'POST', body: { invoice_number, action } });
+    toast(data.success ? `Invoice ${action.replace('_', ' ')} done.` : (data.message || 'Action failed.'), data.success ? 'success' : 'error');
+    loadInvoices();
+  });
+
+  // ---------- POS ----------
+  $('#form-pos-open').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { opening_cash: Number($('#pos-opening-cash').value || 0) };
+    const { data } = await api('/pos/session-open', { method: 'POST', body });
+    if (data.success) {
+      state.posSession = data.session.reference;
+      $('#pos-session-reference').value = data.session.reference;
+      toast('Session opened.', 'success');
+    }
+    renderGenericResult($('#pos-session-result'), data.success, data);
+  });
+
+  $('#form-pos-close').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = {
+      reference: $('#pos-session-reference').value.trim(),
+      closing_cash: $('#pos-closing-cash').value ? Number($('#pos-closing-cash').value) : undefined,
+    };
+    const { data } = await api('/pos/session-close', { method: 'POST', body });
+    renderGenericResult($('#pos-session-result'), data.success, data);
+    if (data.success) toast('Session closed.', 'success');
+  });
+
+  let posItemCount = 0;
+  function addPosItem() {
+    posItemCount += 1;
+    const row = document.createElement('div');
+    row.className = 'line-item-row';
+    row.innerHTML = `
+      <input type="text" placeholder="Item name" data-role="name" required />
+      <input type="number" placeholder="Qty" min="1" value="1" data-role="qty" required />
+      <input type="number" placeholder="Unit price" min="0" step="0.01" data-role="price" required />
+      <button type="button" class="remove-line" title="Remove">×</button>
+    `;
+    row.querySelector('.remove-line').addEventListener('click', () => row.remove());
+    $('#pos-items-list').appendChild(row);
+  }
+  $('[data-action="add-pos-item"]').addEventListener('click', addPosItem);
+
+  $('#form-pos-sale').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const session_reference = $('#pos-session-reference').value.trim();
+    if (!session_reference) { toast('Open a session first.', 'error'); return; }
+    const items = $$('#pos-items-list .line-item-row').map((row) => ({
+      name: row.querySelector('[data-role="name"]').value.trim(),
+      qty: Number(row.querySelector('[data-role="qty"]').value),
+      unit_price: Number(row.querySelector('[data-role="price"]').value),
+    }));
+    if (!items.length) { toast('Add at least one item.', 'error'); return; }
+    const body = {
+      session_reference,
+      items,
+      payment_method: $('#pos-payment-method').value,
+      cash_received: $('#pos-cash-received').value ? Number($('#pos-cash-received').value) : undefined,
+    };
+    const { data } = await api('/pos/sale', { method: 'POST', body });
+    renderGenericResult($('#pos-sale-result'), data.success, data);
+    if (data.success) toast('Sale recorded.', 'success');
+  });
+
+  $('[data-action="load-pos-sales"]').addEventListener('click', async () => {
+    const session_reference = $('#pos-session-reference').value.trim();
+    const { data } = await api(`/pos/sales${session_reference ? `?session_reference=${encodeURIComponent(session_reference)}` : ''}`);
+    const tbody = $('#pos-sales-table tbody');
+    const list = data.sales || data.data || [];
+    tbody.innerHTML = list.length ? list.map((s) => `
+      <tr><td>${escapeHtml(s.reference || '—')}</td><td>${fmtAmount(s.total, s.currency)}</td><td>${s.payment_method || '—'}</td><td>${badge(s.status || 'completed', statusBadgeKind(s.status))}</td></tr>
+    `).join('') : `<tr class="empty-row"><td colspan="4">No sales in this session yet.</td></tr>`;
+  });
+
+  // ---------- Webhooks ----------
+  async function loadWebhookEvents() {
+    const { data } = await api('/webhook-events?limit=100');
+    const tbody = $('#webhook-events-table tbody');
+    const list = data.events || [];
+    tbody.innerHTML = list.length ? list.map((ev) => `
+      <tr>
+        <td>${fmtTime(ev.received_at)}</td>
+        <td>${escapeHtml(ev.event || '—')}</td>
+        <td>${escapeHtml(ev.reference || '—')}</td>
+        <td>${ev.verified ? badge('verified', 'ok') : badge('unverified', 'pending')}</td>
+        <td><button class="btn btn-ghost btn-small" data-view-payload="${ev.id}">View</button></td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="5">No deliveries yet. Create a payment with the callback URL above, then check back.</td></tr>`;
+    tbody._events = list;
+  }
+
+  $('#webhook-events-table').addEventListener('click', (e) => {
+    const id = e.target.dataset.viewPayload;
+    if (!id) return;
+    const list = $('#webhook-events-table tbody')._events || [];
+    const ev = list.find((x) => String(x.id) === id);
+    if (ev) {
+      const win = window.open('', '_blank', 'width=560,height=640');
+      win.document.title = 'Webhook payload';
+      win.document.body.style.cssText = 'background:#12211D;color:#DCE8E2;font-family:monospace;padding:20px;white-space:pre-wrap;';
+      win.document.body.textContent = JSON.stringify(ev.payload, null, 2);
+    }
+  });
+
+  $('[data-action="load-webhook-events"]').addEventListener('click', loadWebhookEvents);
+
+  $('[data-action="load-webhook-log"]').addEventListener('click', async () => {
+    const status = $('#webhook-log-status').value;
+    const { data } = await api(`/webhooks${status ? `?status=${status}` : ''}`);
+    const tbody = $('#webhook-log-table tbody');
+    const list = data.webhooks || data.data || [];
+    tbody.innerHTML = list.length ? list.map((w) => `
+      <tr>
+        <td>${w.id}</td>
+        <td>${escapeHtml(w.transaction_reference || '—')}</td>
+        <td>${escapeHtml(w.event || '—')}</td>
+        <td>${w.http_status ?? '—'}</td>
+        <td>${badge(w.status || '—', statusBadgeKind(w.status))}</td>
+        <td>${w.attempts ?? '—'}</td>
+        <td><button class="btn btn-ghost btn-small" data-resend="${w.id}">Resend</button></td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="7">Nothing in the delivery log yet.</td></tr>`;
+  });
+
+  $('#webhook-log-table').addEventListener('click', async (e) => {
+    const id = e.target.dataset.resend;
+    if (!id) return;
+    const { data } = await api('/webhooks-resend', { method: 'POST', body: { id: Number(id) } });
+    toast(data.success ? 'Resend queued.' : (data.message || 'Could not resend.'), data.success ? 'success' : 'error');
+  });
+
+  // ---------- Dashboard ----------
+  let dashboardTimer = null;
+  async function loadDashboard() {
+    const [{ data: statsData }, { data: txData }, { data: whData }] = await Promise.all([
+      api('/dashboard/stats'),
+      api('/transactions?limit=20'),
+      api('/webhook-events?limit=8'),
+    ]);
+
+    const s = statsData.stats || {};
+    $('#stat-total').textContent = s.total ?? 0;
+    $('#stat-ok').textContent = s.successful ?? 0;
+    $('#stat-fail').textContent = s.failed ?? 0;
+    $('#stat-paid').textContent = fmtAmount(s.total_paid_in || 0);
+
+    const byCurrency = s.byCurrency || [];
+    const max = Math.max(1, ...byCurrency.map((c) => c.count));
+    $('#currency-bars').innerHTML = byCurrency.length
+      ? byCurrency.map((c) => `
+        <div class="bar-row">
+          <span>${c.currency}</span>
+          <span class="bar-track"><span class="bar-fill" style="width:${(c.count / max) * 100}%"></span></span>
+          <span>${c.count}</span>
+        </div>`).join('')
+      : '<p class="empty">No pay-ins logged yet.</p>';
+
+    const tx = txData.transactions || [];
+    $('#tx-table tbody').innerHTML = tx.length ? tx.map((t) => `
+      <tr>
+        <td>${fmtTime(t.created_at)}</td>
+        <td>${t.kind}</td>
+        <td>${escapeHtml(t.reference || '—')}</td>
+        <td>${t.currency || '—'}</td>
+        <td>${fmtAmount(t.amount)}</td>
+        <td>${badge(t.ok ? (t.status || 'success') : (t.status || 'failed'), t.ok ? statusBadgeKind(t.status || 'success') : 'fail')}</td>
+      </tr>
+    `).join('') : `<tr class="empty-row"><td colspan="6">Nothing yet — try creating a payment.</td></tr>`;
+
+    const events = whData.events || [];
+    $('#dash-webhooks').innerHTML = events.length ? events.map((ev) => `
+      <div class="log-item">
+        <span class="log-event">${escapeHtml(ev.event || 'unknown event')}</span>
+        <span class="log-meta">${escapeHtml(ev.reference || '')} · ${fmtTime(ev.received_at)}</span>
+      </div>
+    `).join('') : '<p class="empty">Nothing received yet. Webhooks you trigger will show up here in real time.</p>';
+
+    updateOnboardingBanner();
+
+    if (!dashboardTimer) {
+      dashboardTimer = setInterval(() => {
+        if (currentRoute() === 'dashboard') loadDashboard();
+      }, 8000);
+    }
+  }
+
+  $('[data-action="refresh-transactions"]').addEventListener('click', loadDashboard);
+
+  // ---------- Init ----------
+  async function init() {
+    const unlocked = await checkLock();
+    if (!unlocked) return;
+    await loadCurrencies();
+    await loadSettings();
+    renderRoute();
+  }
+
+  init();
+})();

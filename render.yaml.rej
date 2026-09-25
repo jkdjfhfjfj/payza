@@ -1,0 +1,10 @@
+--- render.yaml	2026-09-25 10:09:06.295545234 +0000
++++ render.yaml	2026-09-25 10:09:06.290861385 +0000
+@@ -8,7 +8,5 @@
+     envVars:
+       - key: DATABASE_URL
+         sync: false
+-      - key: CONSOLE_PASSWORD
+-        sync: false
+       - key: NODE_VERSION
+         value: 20.11.1

@@ -1,0 +1,19 @@
+--- public/index.html	2026-09-25 10:09:06.293807837 +0000
++++ public/index.html	2026-09-25 10:09:06.290783981 +0000
+@@ -12,16 +12,6 @@
+ </head>
+ <body>
+ 
+-<div id="lock-screen" class="lock-screen" hidden>
+-  <form id="lock-form" class="lock-card">
+-    <p class="lock-mark">Payza Console</p>
+-    <h1>Enter the console password</h1>
+-    <input type="password" id="lock-password" placeholder="Password" autocomplete="current-password" required />
+-    <button type="submit" class="btn btn-primary">Unlock</button>
+-    <p class="lock-error" id="lock-error" hidden>That password doesn't match. Try again.</p>
+-  </form>
+-</div>
+-
+ <div id="app" class="app">
+ 
+   <aside class="sidebar">

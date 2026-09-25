@@ -1,0 +1,155 @@
+diff -ruN a/.env.example b/.env.example
+--- a/.env.example	2026-09-25 10:09:06.294767270 +0000
++++ b/.env.example	2026-09-25 10:09:06.290844478 +0000
+@@ -3,6 +3,3 @@
+ 
+ # Port Render will inject automatically. Only needed for local dev.
+ PORT=3000
+-
+-# Optional: lock the console behind a shared password (leave blank to disable)
+-CONSOLE_PASSWORD=
+diff -ruN a/public/app.js b/public/app.js
+--- a/public/app.js	2026-09-25 10:09:06.292799520 +0000
++++ b/public/app.js	2026-09-25 10:09:06.290817748 +0000
+@@ -74,74 +74,16 @@
+ 
+   // ---------- API ----------
+   async function api(path, { method = 'GET', body } = {}) {
+-    const headers = { 'Content-Type': 'application/json' };
+-    const pw = sessionStorage.getItem('payza_console_password');
+-    if (pw) headers['X-Console-Password'] = pw;
+-
+     const res = await fetch(`/api${path}`, {
+       method,
+-      headers,
++      headers: { 'Content-Type': 'application/json' },
+       body: body !== undefined ? JSON.stringify(body) : undefined,
+     });
+ 
+-    if (res.status === 401) {
+-      const data = await res.json().catch(() => ({}));
+-      if (data.message === 'Console is locked.') {
+-        showLock();
+-        throw new Error('Console is locked.');
+-      }
+-    }
+-
+     const data = await res.json().catch(() => ({ success: false, message: 'The server sent back something unexpected.' }));
+     return { ok: res.ok, status: res.status, data };
+   }
+ 
+-  // ---------- Lock screen ----------
+-  function showLock() {
+-    $('#lock-screen').hidden = false;
+-    $('#app').style.display = 'none';
+-  }
+-  function hideLock() {
+-    $('#lock-screen').hidden = true;
+-    $('#app').style.display = '';
+-  }
+-
+-  async function checkLock() {
+-    const res = await fetch('/api/health');
+-    const data = await res.json().catch(() => ({}));
+-    if (!data.locked) { hideLock(); return true; }
+-
+-    const pw = sessionStorage.getItem('payza_console_password');
+-    if (!pw) { showLock(); return false; }
+-
+-    const check = await fetch('/api/settings', { headers: { 'X-Console-Password': pw } });
+-    if (check.status === 401) {
+-      sessionStorage.removeItem('payza_console_password');
+-      showLock();
+-      return false;
+-    }
+-    hideLock();
+-    return true;
+-  }
+-
+-  $('#lock-form').addEventListener('submit', async (e) => {
+-    e.preventDefault();
+-    const password = $('#lock-password').value;
+-    const res = await fetch('/api/unlock', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ password }),
+-    });
+-    const data = await res.json();
+-    if (data.success) {
+-      sessionStorage.setItem('payza_console_password', password);
+-      hideLock();
+-      init();
+-    } else {
+-      $('#lock-error').hidden = false;
+-    }
+-  });
+-
+   // ---------- Routing ----------
+   const ROUTES = ['dashboard', 'pay', 'verify', 'refunds', 'payouts', 'customers', 'plans', 'invoices', 'pos', 'webhooks', 'currencies', 'settings'];
+ 
+@@ -786,8 +728,6 @@
+ 
+   // ---------- Init ----------
+   async function init() {
+-    const unlocked = await checkLock();
+-    if (!unlocked) return;
+     await loadCurrencies();
+     await loadSettings();
+     renderRoute();
+diff -ruN a/public/index.html b/public/index.html
+--- a/public/index.html	2026-09-25 10:09:06.293807837 +0000
++++ b/public/index.html	2026-09-25 10:09:06.290783981 +0000
+@@ -12,16 +12,6 @@
+ </head>
+ <body>
+ 
+-<div id="lock-screen" class="lock-screen" hidden>
+-  <form id="lock-form" class="lock-card">
+-    <p class="lock-mark">Payza Console</p>
+-    <h1>Enter the console password</h1>
+-    <input type="password" id="lock-password" placeholder="Password" autocomplete="current-password" required />
+-    <button type="submit" class="btn btn-primary">Unlock</button>
+-    <p class="lock-error" id="lock-error" hidden>That password doesn't match. Try again.</p>
+-  </form>
+-</div>
+-
+ <div id="app" class="app">
+ 
+   <aside class="sidebar">
+diff -ruN a/render.yaml b/render.yaml
+--- a/render.yaml	2026-09-25 10:09:06.295545234 +0000
++++ b/render.yaml	2026-09-25 10:09:06.290861385 +0000
+@@ -8,7 +8,5 @@
+     envVars:
+       - key: DATABASE_URL
+         sync: false
+-      - key: CONSOLE_PASSWORD
+-        sync: false
+       - key: NODE_VERSION
+         value: 20.11.1
+diff -ruN a/server/index.js b/server/index.js
+--- a/server/index.js	2026-09-25 10:09:06.291814815 +0000
++++ b/server/index.js	2026-09-25 10:09:06.290765441 +0000
+@@ -15,21 +15,7 @@
+ 
+ app.use(express.json({ limit: '2mb' }));
+ 
+-// Optional shared-password gate for the console itself (not the Payzaapi keys).
+-app.post('/api/unlock', (req, res) => {
+-  const required = process.env.CONSOLE_PASSWORD;
+-  res.json({ success: !required || req.body.password === required });
+-});
+-app.get('/api/health', (req, res) => res.json({ success: true, locked: Boolean(process.env.CONSOLE_PASSWORD) }));
+-
+-if (process.env.CONSOLE_PASSWORD) {
+-  app.use('/api', (req, res, next) => {
+-    if (req.path === '/unlock' || req.path === '/health') return next();
+-    const provided = req.get('X-Console-Password');
+-    if (provided === process.env.CONSOLE_PASSWORD) return next();
+-    return res.status(401).json({ success: false, message: 'Console is locked.' });
+-  });
+-}
++app.get('/api/health', (req, res) => res.json({ success: true }));
+ 
+ app.use('/api', require('./routes/api'));
+ 

@@ -1,0 +1,87 @@
+--- public/app.js	2026-09-25 10:09:06.292799520 +0000
++++ public/app.js	2026-09-25 10:09:06.290817748 +0000
+@@ -74,74 +74,16 @@
+ 
+   // ---------- API ----------
+   async function api(path, { method = 'GET', body } = {}) {
+-    const headers = { 'Content-Type': 'application/json' };
+-    const pw = sessionStorage.getItem('payza_console_password');
+-    if (pw) headers['X-Console-Password'] = pw;
+-
+     const res = await fetch(`/api${path}`, {
+       method,
+-      headers,
++      headers: { 'Content-Type': 'application/json' },
+       body: body !== undefined ? JSON.stringify(body) : undefined,
+     });
+ 
+-    if (res.status === 401) {
+-      const data = await res.json().catch(() => ({}));
+-      if (data.message === 'Console is locked.') {
+-        showLock();
+-        throw new Error('Console is locked.');
+-      }
+-    }
+-
+     const data = await res.json().catch(() => ({ success: false, message: 'The server sent back something unexpected.' }));
+     return { ok: res.ok, status: res.status, data };
+   }
+ 
+-  // ---------- Lock screen ----------
+-  function showLock() {
+-    $('#lock-screen').hidden = false;
+-    $('#app').style.display = 'none';
+-  }
+-  function hideLock() {
+-    $('#lock-screen').hidden = true;
+-    $('#app').style.display = '';
+-  }
+-
+-  async function checkLock() {
+-    const res = await fetch('/api/health');
+-    const data = await res.json().catch(() => ({}));
+-    if (!data.locked) { hideLock(); return true; }
+-
+-    const pw = sessionStorage.getItem('payza_console_password');
+-    if (!pw) { showLock(); return false; }
+-
+-    const check = await fetch('/api/settings', { headers: { 'X-Console-Password': pw } });
+-    if (check.status === 401) {
+-      sessionStorage.removeItem('payza_console_password');
+-      showLock();
+-      return false;
+-    }
+-    hideLock();
+-    return true;
+-  }
+-
+-  $('#lock-form').addEventListener('submit', async (e) => {
+-    e.preventDefault();
+-    const password = $('#lock-password').value;
+-    const res = await fetch('/api/unlock', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ password }),
+-    });
+-    const data = await res.json();
+-    if (data.success) {
+-      sessionStorage.setItem('payza_console_password', password);
+-      hideLock();
+-      init();
+-    } else {
+-      $('#lock-error').hidden = false;
+-    }
+-  });
+-
+   // ---------- Routing ----------
+   const ROUTES = ['dashboard', 'pay', 'verify', 'refunds', 'payouts', 'customers', 'plans', 'invoices', 'pos', 'webhooks', 'currencies', 'settings'];
+ 
+@@ -786,8 +728,6 @@
+ 
+   // ---------- Init ----------
+   async function init() {
+-    const unlocked = await checkLock();
+-    if (!unlocked) return;
+     await loadCurrencies();
+     await loadSettings();
+     renderRoute();
